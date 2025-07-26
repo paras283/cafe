@@ -4,7 +4,6 @@ import { X, Eye, EyeOff, LogIn, LogOut, Settings, List, Archive, Calendar, Plus,
 import { supabase, Order, MenuItem } from '../lib/supabase'
 import MenuManagement from './MenuManagement'
 import toast from 'react-hot-toast'
-import { v4 as uuidv4 } from 'uuid';
 
 interface AdminPanelProps {
   isOpen: boolean
@@ -201,87 +200,98 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    const instanceId = uuidv4();
-    const LEADER_KEY = 'admin-broadcast-leader';
+    let broadcastChannel: ReturnType<typeof supabase.channel> | null = null;
+    let postgresChannel: ReturnType<typeof supabase.channel> | null = null;
 
-    // Elect current instance as leader if none
-    if (!localStorage.getItem(LEADER_KEY)) {
-      localStorage.setItem(LEADER_KEY, instanceId);
-    }
+    const setupChannels = async () => {
+      console.log('🔄 Setting up channels...');
 
-    const isLeader = () => localStorage.getItem(LEADER_KEY) === instanceId;
-
-    const handleStorageChange = () => {
-      // Recheck leader status when storage changes
-      if (!localStorage.getItem(LEADER_KEY)) {
-        localStorage.setItem(LEADER_KEY, instanceId);
-      }
-    };
-
-    window.addEventListener('storage', handleStorageChange);
-
-    const broadcastChannel = supabase.channel('orders-broadcast');
-    broadcastChannel.subscribe((status) => {
-      console.log('📡 Broadcast channel status:', status);
-    });
-
-    const postgresChannel = supabase
-      .channel('admin-orders-channel')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'orders',
-        },
-        async (payload) => {
-          console.log('🧩 Admin Postgres payload:', payload);
-
-          const updatedOrder = payload.new as Order;
-
-          // ✅ Only leader broadcasts to customers
-          if (isLeader() && payload.eventType === 'UPDATE' && updatedOrder.customer_id) {
-            await broadcastChannel.send({
-              type: 'broadcast',
-              event: 'order_update',
-              payload: {
-                order: updatedOrder,
-                customer_id: updatedOrder.customer_id,
-              },
-            });
-          }
-
-          // ✅ Update admin panel UI
-          if (payload.eventType === 'INSERT') {
-            if (updatedOrder.status !== 'completed') {
-              setOrders((prev) => [updatedOrder, ...prev.filter((o) => o.id !== updatedOrder.id)]);
-            }
-          } else if (payload.eventType === 'UPDATE') {
-            if (updatedOrder.status === 'completed') {
-              setOrders((prev) => prev.filter((o) => o.id !== updatedOrder.id));
-              setCompletedOrders((prev) => [updatedOrder, ...prev.filter((o) => o.id !== updatedOrder.id)]);
-            } else {
-              setOrders((prev) => prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o)));
-            }
-          }
+      // ✅ Broadcast channel
+      broadcastChannel = supabase.channel('orders-broadcast');
+      await broadcastChannel.subscribe((status) => {
+        console.log('📡 Broadcast channel status:', status);
+        if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
+          console.warn('⚠️ Broadcast channel dropped, re-subscribing...');
+          setupChannels(); // Re-initialize
         }
-      )
-      .subscribe((status) => {
-        console.log('✅ Subscribed to Postgres changes_:', status);
       });
 
-    // Cleanup on unmount
-    return () => {
-      if (isLeader()) {
-        localStorage.removeItem(LEADER_KEY);
-      }
+      console.log('✅ Broadcast channel subscribed');
 
-      window.removeEventListener('storage', handleStorageChange);
-      supabase.removeChannel(postgresChannel);
-      supabase.removeChannel(broadcastChannel);
+      // ✅ Postgres changes channel
+      postgresChannel = supabase
+        .channel('admin-orders-channel')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'orders',
+          },
+          async (payload) => {
+            console.log('🧩 Admin Postgres payload:', payload);
+
+            const updatedOrder = payload.new as Order;
+
+            // ✅ Always broadcast for INSERT or UPDATE
+            if ((payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') && updatedOrder.customer_id) {
+              console.log('✅ Sending broadcast for order:', updatedOrder.id);
+
+              try {
+                const res = await broadcastChannel?.send({
+                  type: 'broadcast',
+                  event: 'order_update',
+                  payload: {
+                    order: updatedOrder,
+                    customer_id: updatedOrder.customer_id,
+                  },
+                });
+                console.log('📤 Broadcast sent result:', res);
+              } catch (err) {
+                console.error('❌ Broadcast send error:', err);
+              }
+            }
+
+            // ✅ Update admin UI
+            if (payload.eventType === 'INSERT') {
+              if (updatedOrder.status !== 'completed') {
+                setOrders((prev) => [
+                  updatedOrder,
+                  ...prev.filter((o) => o.id !== updatedOrder.id),
+                ]);
+              }
+            } else if (payload.eventType === 'UPDATE') {
+              if (updatedOrder.status === 'completed') {
+                setOrders((prev) => prev.filter((o) => o.id !== updatedOrder.id));
+                setCompletedOrders((prev) => [
+                  updatedOrder,
+                  ...prev.filter((o) => o.id !== updatedOrder.id),
+                ]);
+              } else {
+                setOrders((prev) =>
+                  prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o))
+                );
+              }
+            }
+          }
+        )
+        .subscribe((status) => {
+          console.log('✅ Postgres channel status:', status);
+          if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
+            console.warn('⚠️ Postgres channel dropped, re-subscribing...');
+            setupChannels(); // Re-initialize
+          }
+        });
+    };
+
+    setupChannels();
+
+    return () => {
+      console.log('📴 Cleaning up channels...');
+      if (broadcastChannel) supabase.removeChannel(broadcastChannel);
+      if (postgresChannel) supabase.removeChannel(postgresChannel);
     };
   }, [isAuthenticated]);
-
 
 
   const handleLogin = async (e: React.FormEvent) => {

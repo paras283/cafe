@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
+
 // ✅ Generate or get customer ID for anonymous users
 export const getCustomerId = (): string => {
   let customerId = localStorage.getItem('customer_id')

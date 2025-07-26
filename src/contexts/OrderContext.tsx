@@ -26,108 +26,94 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return 'ORD' + Date.now().toString().slice(-6);
   };
 
- const fetchOrdersFromDB = async () => {
-  try {
-    const customerId = await getCustomerId(); // ✅ Await to get actual value
+  const fetchOrdersFromDB = async () => {
+    try {
+      const customerId = await getCustomerId(); // ✅ Await to get actual value
 
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('customer_id', customerId)
-      .neq('status', 'completed') // ✅ Fetch all active orders
-      .order('created_at', { ascending: false });
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('customer_id', customerId)
+        .neq('status', 'completed')
+        .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('❌ Failed to fetch orders:', error.message);
-      return;
-    }
-
-    setOrders(data || []);
-  } catch (error) {
-    console.error('❌ Error fetching orders:', error);
-  }
-};
-
-
-  useEffect(() => {
-    let channel: ReturnType<typeof supabase.channel> | null = null;
-
-    const setupRealtimeBroadcast = async () => {
-      await fetchOrdersFromDB();
-
-      const customerId = await getCustomerId();
-      console.log('👤 Customer ID for subscription:', customerId);
-
-      if (!customerId) {
-        console.warn('⚠️ No customer ID found, skipping broadcast subscription.');
+      if (error) {
+        console.error('❌ Failed to fetch orders:', error.message);
         return;
       }
 
-      channel = supabase.channel('orders-broadcast', {
-        config: {
-          broadcast: {
-            self: true,
-          },
-        },
-      });
+      setOrders(data || []);
+    } catch (error) {
+      console.error('❌ Error fetching orders:', error);
+    }
+  };
 
-      channel.on('broadcast', { event: 'order_update' }, (payload) => {
-        const {
-          order: updatedOrder,
-          customer_id: payloadCustomerId,
-        } = payload.payload as {
-          order: Order;
-          customer_id: string;
-        };
+  useEffect(() => {
+  let channel: ReturnType<typeof supabase.channel> | null = null;
 
-        if (payloadCustomerId === customerId) {
-          console.log('📢 Matched broadcast update:', updatedOrder);
-          // update order state...
-        }
+  const setupRealtimeBroadcast = async () => {
+    console.log('🔄 Setting up customer broadcast...');
+    
+    await fetchOrdersFromDB();
 
-        if (!updatedOrder || !updatedOrder.customer_id || !updatedOrder.items?.length) {
-          console.warn('⚠️ Received malformed or empty order update:', updatedOrder);
-          return;
-        }
+    const customerId = await getCustomerId();
+    if (!customerId) {
+      console.warn('⚠️ No customer ID found, skipping broadcast subscription.');
+      return;
+    }
 
-        console.log("📦 Broadcast payload received:", updatedOrder);
+    channel = supabase.channel('orders-broadcast');
 
-        if (updatedOrder.customer_id === customerId) {
-          console.log('📢 Matched broadcast update for this customer:', updatedOrder);
-
-          setOrders((prev) => {
-            const others = prev.filter((o) => o.id !== updatedOrder.id);
-            return updatedOrder.status !== 'completed'
-              ? [updatedOrder, ...others]
-              : others;
-          });
-
-          if (updatedOrder.status === 'ready') {
-            toast.success(`Order ${updatedOrder.order_number} is ready!`);
-          }
-        }
-      });
-
-      await channel.subscribe((status) => {
-        if (status === 'CHANNEL_ERROR') {
-          console.error('❌ Broadcast channel error');
-        } else if (status === 'SUBSCRIBED') {
-          console.log('✅ Subscribed to broadcast updates');
-        }
-      });
-
-    };
-
-    setupRealtimeBroadcast();
-
-    return () => {
-      if (channel) {
-        supabase.removeChannel(channel);
-        console.log('📴 Realtime channel removed');
+    await channel.subscribe((status) => {
+      console.log('📡 Customer channel status:', status);
+      if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
+        console.warn('⚠️ Customer channel dropped, re-subscribing...');
+        setupRealtimeBroadcast(); // Reconnect
       }
-    };
-  }, []);
+    });
 
+    console.log('✅ Customer subscribed to broadcast');
+
+    channel.on('broadcast', { event: 'order_update' }, (payload) => {
+      const {
+        order: updatedOrder,
+        customer_id: payloadCustomerId,
+      } = payload.payload as {
+        order: Order;
+        customer_id: string;
+      };
+
+      if (payloadCustomerId !== customerId) return;
+
+      console.log('📨 Received broadcast update:', updatedOrder);
+
+      if (!updatedOrder || !updatedOrder.customer_id || !updatedOrder.items?.length) {
+        console.warn('⚠️ Received malformed or empty order update:', updatedOrder);
+        return;
+      }
+
+      setOrders((prev) => {
+        const others = prev.filter((o) => o.id !== updatedOrder.id);
+        return updatedOrder.status !== 'completed'
+          ? [updatedOrder, ...others]
+          : others;
+      });
+
+      if (updatedOrder.status === 'ready') {
+        toast.success(`Order ${updatedOrder.order_number} is ready!`);
+      }
+    });
+  };
+
+  setupRealtimeBroadcast();
+
+  return () => {
+    if (channel) {
+      supabase.removeChannel(channel);
+      console.log('📴 Customer channel removed');
+    }
+  };
+}, []);
 
 
 
@@ -138,7 +124,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   ): Promise<string | null> => {
     try {
       const orderNumber = generateOrderNumber();
-      const customerId = getCustomerId();
+      const customerId = await getCustomerId(); // ✅ Fix: await added
       const transactionId = '756488735546473'; // Replace with real txn ID if needed
 
       const { data, error } = await supabase
@@ -170,7 +156,7 @@ export const OrderProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const markOrderReceived = async (orderId: string): Promise<void> => {
     try {
-      const customerId = getCustomerId();
+      const customerId = await getCustomerId(); // ✅ Fix: await added
       const { error } = await supabase
         .from('orders')
         .update({ status: 'completed', completed_at: new Date().toISOString() })

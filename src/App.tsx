@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import {AnimatePresence } from 'framer-motion'
 import { Toaster } from 'react-hot-toast'
 import { CartProvider } from './contexts/CartContext'
 import { OrderProvider } from './contexts/OrderContext'
@@ -74,7 +74,6 @@ const AppContent: React.FC = () => {
             isOpen={isCartOpen}
             onClose={() => setIsCartOpen(false)}
           />
-          
           <AdminPanel
             isOpen={isAdminOpen}
             onClose={() => setIsAdminOpen(false)}
